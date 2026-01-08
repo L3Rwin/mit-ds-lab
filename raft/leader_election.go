@@ -39,13 +39,20 @@ func (rf *Raft) StartElection() {
 			// 统计票数
 			if reply.VoteGranted {
 				votes++
+			} else if reply.Term > term {
+				rf.currentTerm = reply.Term
+				rf.votedFor = None
+				rf.state = Follower
+				rf.persist()
+				return
 			}
+
 			if done || votes <= len(rf.peers)/2 {
 				// 在成为leader之前如果投票数不足需要继续收集选票
 				// 同时在成为leader的那一刻，就不需要管剩余节点的响应了，因为已经具备成为leader的条件
 				return
 			}
-			if rf.state != Candidate || rf.currentTerm != term {
+			if rf.state != Candidate {
 				return
 			}
 			fmt.Printf("\n[%d] got enough votes, and now is the leader (currentTerm=%d, maxIdx = %d)!\n", rf.me, rf.currentTerm, len(rf.logs)-1)
@@ -104,6 +111,7 @@ func (rf *Raft) becomeLeader() {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
+	defer rf.persist()
 	defer rf.mu.Unlock()
 	////fmt.Printf("[%d] begins grasping the lock...", rf.me)
 	reply.VoteGranted = true    // 默认设置响应体为投同意票状态

@@ -18,13 +18,14 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
-
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"MIT6.824-6.5840/labgob"
 	"MIT6.824-6.5840/labrpc"
 )
 
@@ -58,6 +59,7 @@ const heartbeatTimeout = 150 * time.Millisecond
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	appmu     sync.Mutex          // Lock to protect shared access to this peer's apply state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -141,6 +143,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	rf.persister.mu.Lock()
+	defer rf.persister.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	rf.persister.raftstate = w.Bytes()
 }
 
 // restore previously persisted state.
@@ -148,19 +158,26 @@ func (rf *Raft) readPersist(data []byte) {
 	if len(data) < 1 { // bootstrap without any state?
 		return
 	}
+	rf.persister.mu.Lock()
+	defer rf.persister.mu.Unlock()
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var term, voteFor int
+	var logs []ApplyMsg
+
+	if d.Decode(&term) != nil ||
+		d.Decode(&voteFor) != nil ||
+		d.Decode(&logs) != nil {
+		fmt.Println("decode failed")
+		return
+	}
+	rf.currentTerm = term
+	rf.votedFor = voteFor
+	rf.logs = logs
+	rf.persister.raftstate = data
+
 }
 
 // example RequestVote RPC arguments structure.
@@ -246,6 +263,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 
 	rf.logs = append(rf.logs, ApplyMsg{CommandValid: true, Command: command, CommandIndex: index, Term: term})
+	rf.persist()
 	DPrintf("[%d] leader started %d %d with commitIndex=%d, maxIdx=%d", rf.me, index, command, rf.commitIndex, len(rf.logs)-1)
 	return index, term, isLeader
 }
@@ -292,7 +310,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 func (rf *Raft) StartAppendEntries(heart bool) {
-	rf.peerTrackers[rf.me].nextIndex += 1
+	// rf.peerTrackers[rf.me].nextIndex += 1
 
 	// 并行向其他节点发送心跳，让他们知道此刻已经有一个leader产生
 	for i, _ := range rf.peers {
@@ -309,6 +327,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 	// #endregion
 	rf.mu.Lock() // 加接收心跳方的锁
+	defer rf.persist()
 	defer rf.mu.Unlock()
 
 	if args.LeaderTerm < rf.currentTerm {
@@ -376,13 +395,12 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	// 因此可以安全地更新commitIndex到min(LeaderCommit, PrevLogIndex + len(args.Logs))
 	// 注意：commitIndex 只能增加，不能减少
 	lastNewIndex := args.PrevLogIndex + uint64(len(args.Logs))
-	maxSafeCommit := lastNewIndex
-	if args.LeaderCommit < maxSafeCommit {
-		maxSafeCommit = args.LeaderCommit
-	}
+
 	// commitIndex 只能增加，不能减少
-	if maxSafeCommit > rf.commitIndex {
-		rf.commitIndex = maxSafeCommit
+	if lastNewIndex > args.LeaderCommit {
+		rf.commitIndex = args.LeaderCommit
+	} else {
+		rf.commitIndex = lastNewIndex
 	}
 	// #region agent log
 	// #endregion
@@ -426,18 +444,9 @@ func (rf *Raft) updateCommitIndex() {
 		return
 	}
 
-	// 从最高的 index 开始向下扫描到 commitIndex+1
-	// log index 从 0 开始，所以 logs[i] 对应 log index i
 	maxIndex := uint64(len(rf.logs) - 1)
 
-	// #region agent log
-
-	// #endregion
-
-	// 从高到低扫描
-	// 注意：log index 从 0 开始
 	for index := maxIndex; index > rf.commitIndex; index-- {
-		// 统计有多少个节点的 matchIndex >= index（包括 Leader 自己）
 		count := 1 // Leader 自己（Leader 总是有所有日志）
 		for i := range rf.peers {
 			if i != rf.me && rf.peerTrackers[i].matchIndex >= index {
@@ -445,23 +454,18 @@ func (rf *Raft) updateCommitIndex() {
 			}
 		}
 
-		// #endregion
-
 		// 如果大多数节点都复制了该 index
 		if 2*count > len(rf.peers) {
-			// 检查该 index 的日志是否是当前任期的
-			// index 从 0 开始，所以 logs[index] 对应 log index index
+
 			logArrayIndex := int(index)
 			if logArrayIndex >= 0 && logArrayIndex < len(rf.logs) {
 				// #region agent log
 
 				// #endregion
 				if rf.logs[logArrayIndex].Term == rf.currentTerm {
-					// 只能提交当前任期的日志
-					rf.commitIndex = index
-					// #region agent log
 
-					// #endregion
+					rf.commitIndex = index
+
 					break
 				}
 			}
@@ -492,6 +496,7 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 			rf.currentTerm = reply.FollowerTerm
 			rf.votedFor = None
 			rf.state = Follower
+			rf.persist()
 			return
 		} else if reply.Success == false {
 			// #region agent log
@@ -559,6 +564,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	if rf.persister.RaftStateSize() == 0 {
+		rf.persist()
+	}
 	//Leader选举协程
 	//fmt.Printf("finishing creating raft node %d", rf.me)
 	go rf.ticker()
@@ -614,7 +623,7 @@ func (rf *Raft) applier() {
 
 // 在持有/释放锁间安全推进 lastApplied 并发送 ApplyMsg
 func (rf *Raft) tryApplyEntries() {
-	rf.mu.Lock()
+	rf.appmu.Lock()
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 		idx := rf.lastApplied
@@ -632,9 +641,9 @@ func (rf *Raft) tryApplyEntries() {
 		// #region agent log
 
 		// #endregion
-		rf.mu.Unlock()
+		rf.appmu.Unlock()
 		rf.applyCh <- msg
-		rf.mu.Lock()
+		rf.appmu.Lock()
 	}
-	rf.mu.Unlock()
+	rf.appmu.Unlock()
 }
