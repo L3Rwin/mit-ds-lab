@@ -347,10 +347,6 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		rf.votedFor = None
 	}
 
-	// #region agent log
-
-	// #endregion
-
 	// log index从0开始，所以logs[i]对应log index i
 	// 由于Make时预载了index=0的entry，PrevLogIndex应该>=0
 	if int(args.PrevLogIndex) >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != int(args.PrevLogTerm) {
@@ -390,18 +386,18 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 		// #endregion
 	}
-	// 更新 commitIndex，只能更新到已确认与leader一致的日志位置
-	// 如果AppendEntries成功，说明日志至少到PrevLogIndex + len(args.Logs)是一致的
-	// 因此可以安全地更新commitIndex到min(LeaderCommit, PrevLogIndex + len(args.Logs))
-	// 注意：commitIndex 只能增加，不能减少
-	lastNewIndex := args.PrevLogIndex + uint64(len(args.Logs))
 
 	// commitIndex 只能增加，不能减少
-	if lastNewIndex > args.LeaderCommit {
-		rf.commitIndex = args.LeaderCommit
-	} else {
-		rf.commitIndex = lastNewIndex
+	// after log consistency + possible append
+	newCommit := args.LeaderCommit
+	lastIndex := uint64(len(rf.logs) - 1)
+	if newCommit > lastIndex {
+		newCommit = lastIndex
 	}
+	if newCommit > rf.commitIndex {
+		rf.commitIndex = newCommit
+	}
+
 	// #region agent log
 	// #endregion
 	// #region agent log

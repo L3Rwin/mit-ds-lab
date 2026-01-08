@@ -124,7 +124,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-
+		reply.Term = rf.currentTerm
 		rf.votedFor = None
 		rf.state = Follower
 	}
