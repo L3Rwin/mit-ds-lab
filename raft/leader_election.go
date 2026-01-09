@@ -67,7 +67,7 @@ func (rf *Raft) StartElection() {
 				rf.peerTrackers[i].nextIndex = uint64(len(rf.logs)) // 初始化为 len(logs) = 1（因为预载了 index=0 的 entry）
 				rf.peerTrackers[i].matchIndex = 0                   // 初始化为 0
 			}
-			rf.peerTrackers[rf.me].matchIndex = uint64(len(rf.logs)) - 1
+			// rf.peerTrackers[rf.me].matchIndex = uint64(len(rf.logs)) - 1
 			rf.StartAppendEntries(true) // 立即开始发送心跳而不是等定时器到期再发送，否则有一定概率在心跳到达从节点之前另一个leader也被选举成功，从而出现了两个leader
 		}(i)
 	}
@@ -139,7 +139,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		rf.state = Follower
 		rf.resetElectionTimer() //自己的票已经投出时就转为follower状态
-		DPrintf("[%d] Granted vote to %d at term %d", rf.me, args.CandidateId, rf.currentTerm)
+		DPrintf("[%d][%d] Granted vote to %d at term %d", rf.me, rf.currentTerm, args.CandidateId, rf.currentTerm)
 	} else {
 		reply.VoteGranted = false
 	}

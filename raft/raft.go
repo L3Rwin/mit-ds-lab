@@ -264,7 +264,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.logs = append(rf.logs, ApplyMsg{CommandValid: true, Command: command, CommandIndex: index, Term: term})
 	rf.persist()
-	DPrintf("[%d] leader started %d %d with commitIndex=%d, maxIdx=%d", rf.me, index, command, rf.commitIndex, len(rf.logs)-1)
+	DPrintf("[%d][%d] leader started %d %d with commitIndex=%d, maxIdx=%d", rf.me, rf.currentTerm, index, command, rf.commitIndex, len(rf.logs)-1)
 	return index, term, isLeader
 }
 
@@ -333,6 +333,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	if args.LeaderTerm < rf.currentTerm {
 		reply.FollowerTerm = rf.currentTerm
 		reply.Success = false
+		DPrintf("[%d][%d] RequestAppendEntries failed because leader term is less than follower term", rf.me, rf.currentTerm)
 
 		return
 	}
@@ -354,6 +355,9 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 		// #endregion
 		reply.Success = false
+		DPrintf("[%d][%d] RequestAppendEntries failed because PrevLogIndex or PrevLogTerm is not consistent", rf.me, rf.currentTerm)
+		DPrintf("[%d][%d] last log: %v vs %v", rf.me, rf.currentTerm, len(rf.logs)-1, args.PrevLogIndex)
+		// DPrintf("[%d][%d] local prev log term: %v, args.PrevLogTerm: %v", rf.me, rf.currentTerm, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
 	if len(args.Logs) > 0 {
@@ -381,7 +385,8 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 			rf.logs = append(rf.logs, args.Logs[j:]...)
 		}
 
-		DPrintf("[%d] RequestAppendEntries logs appended from %d to %d", rf.me, args.PrevLogIndex+1, len(rf.logs)-1)
+		DPrintf("[%d][%d] RequestAppendEntries logs appended from %d to %d", rf.me, rf.currentTerm, args.PrevLogIndex+1, len(rf.logs)-1)
+		DPrintf("[%d][%d] last log: %v", rf.me, rf.currentTerm, rf.logs[len(rf.logs)-1])
 		// #region agent log
 
 		// #endregion
@@ -405,9 +410,9 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	reply.Success = true
 
 	// commitIndex 可能推进，唤醒应用协程
-	rf.mu.Unlock()
-	rf.tryApplyEntries()
-	rf.mu.Lock()
+	// rf.mu.Unlock()
+	// rf.tryApplyEntries()
+	// rf.mu.Lock()
 
 	//fmt.Printf("\n  %d receive heartbeat at leader's term %d, and my term is %d", rf.me, args.LeaderTerm, rf.currentTerm)
 
@@ -472,8 +477,9 @@ func (rf *Raft) updateCommitIndex() {
 func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 	reply := RequestAppendEntriesReply{}
 	args := RequestAppendEntriesArgs{}
-
+	rf.mu.Lock()
 	rf.BuildAEArg(&args, targetServerId)
+	rf.mu.Unlock()
 
 	// args.Logs = rf.logs[args.PrevLogIndex+1:]
 	if rf.state != Leader {
@@ -516,9 +522,9 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 			}
 			// 更新 commitIndex：从高到低扫描，找到大多数节点都复制的最高 index
 			rf.updateCommitIndex()
-			rf.mu.Unlock()
-			rf.tryApplyEntries()
-			rf.mu.Lock()
+			// rf.mu.Unlock()
+			// rf.tryApplyEntries()
+			// rf.mu.Lock()
 		}
 	}
 
@@ -617,9 +623,8 @@ func (rf *Raft) applier() {
 	}
 }
 
-// 在持有/释放锁间安全推进 lastApplied 并发送 ApplyMsg
 func (rf *Raft) tryApplyEntries() {
-	rf.appmu.Lock()
+	rf.mu.Lock()
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
 		idx := rf.lastApplied
@@ -637,9 +642,10 @@ func (rf *Raft) tryApplyEntries() {
 		// #region agent log
 
 		// #endregion
-		rf.appmu.Unlock()
+		// rf.appmu.Unlock()
+		DPrintf("[%d][%d] applying log entry %d", rf.me, rf.currentTerm, idx)
 		rf.applyCh <- msg
-		rf.appmu.Lock()
+		// rf.appmu.Lock()
 	}
-	rf.appmu.Unlock()
+	rf.mu.Unlock()
 }
