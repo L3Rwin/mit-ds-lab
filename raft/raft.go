@@ -350,21 +350,35 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 	// log index从0开始，所以logs[i]对应log index i
 	// 由于Make时预载了index=0的entry，PrevLogIndex应该>=0
-	if int(args.PrevLogIndex) >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != int(args.PrevLogTerm) {
+	if int(args.PrevLogIndex) >= len(rf.logs) {
 		// #region agent log
 
 		// #endregion
 		reply.Success = false
-		DPrintf("[%d][%d] RequestAppendEntries failed because PrevLogIndex or PrevLogTerm is not consistent", rf.me, rf.currentTerm)
+		reply.ConflictIndex = len(rf.logs)
+		reply.ConflictTerm = -1
+		DPrintf("[%d][%d] RequestAppendEntries failed because PrevLogIndex is not consistent", rf.me, rf.currentTerm)
 		DPrintf("[%d][%d] last log: %v vs %v", rf.me, rf.currentTerm, len(rf.logs)-1, args.PrevLogIndex)
 		// DPrintf("[%d][%d] local prev log term: %v, args.PrevLogTerm: %v", rf.me, rf.currentTerm, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
+	} else if rf.logs[args.PrevLogIndex].Term != int(args.PrevLogTerm) {
+		reply.Success = false
+		i := int(args.PrevLogIndex) - 1
+		tgt := rf.logs[args.PrevLogIndex].Term
+		for i > 0 && rf.logs[i].Term == tgt {
+			i--
+		}
+		reply.ConflictIndex = i + 1
+		reply.ConflictTerm = tgt
+		DPrintf("[%d][%d] RequestAppendEntries failed because PrevLogTerm is not consistent", rf.me, rf.currentTerm)
+		DPrintf("[%d][%d] last log: %v vs %v", rf.me, rf.currentTerm, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+		return
 	}
+	j := 0
 	if len(args.Logs) > 0 {
 		// firstNew := PrevLogIndex + 1
 		firstNew := int(args.PrevLogIndex) + 1
 		i := firstNew
-		j := 0
 
 		lastLogIndex := len(rf.logs) - 1
 
@@ -373,6 +387,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 			if rf.logs[i].Term != args.Logs[j].Term {
 				// truncateFrom(i)：删除 i..end
 				rf.logs = rf.logs[:i]
+				DPrintf("[%d][%d] RequestAppendEntries logs truncated from %d to %d", rf.me, rf.currentTerm, i, len(rf.logs)-1)
 				lastLogIndex = i - 1
 				break
 			}
@@ -381,15 +396,16 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		}
 
 		// 追加还没存在的部分
-		if j < len(args.Logs) {
-			rf.logs = append(rf.logs, args.Logs[j:]...)
-		}
 
 		DPrintf("[%d][%d] RequestAppendEntries logs appended from %d to %d", rf.me, rf.currentTerm, args.PrevLogIndex+1, len(rf.logs)-1)
 		DPrintf("[%d][%d] last log: %v", rf.me, rf.currentTerm, rf.logs[len(rf.logs)-1])
 		// #region agent log
 
 		// #endregion
+	}
+
+	if j < len(args.Logs) {
+		rf.logs = append(rf.logs, args.Logs[j:]...)
 	}
 
 	// commitIndex 只能增加，不能减少
@@ -504,9 +520,24 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 			// #region agent log
 
 			// #endregion
-			rf.peerTrackers[targetServerId].nextIndex -= 1
-			if rf.peerTrackers[targetServerId].nextIndex < 1 {
-				rf.peerTrackers[targetServerId].nextIndex = 1
+			if reply.ConflictTerm == -1 {
+				rf.peerTrackers[targetServerId].nextIndex = uint64(reply.ConflictIndex)
+			} else {
+				tgt := reply.ConflictTerm
+				var i int
+				for i := len(rf.logs) - 1; i > 0; i-- {
+					if rf.logs[i].Term == tgt {
+						rf.peerTrackers[targetServerId].nextIndex = uint64(i) + 1
+						break
+					} else if rf.logs[i].Term < tgt {
+						rf.peerTrackers[targetServerId].nextIndex = uint64(reply.ConflictIndex)
+						break
+					}
+				}
+				if i == 0 {
+					rf.peerTrackers[targetServerId].nextIndex = uint64(reply.ConflictIndex)
+				}
+
 			}
 			// #region agent log
 
