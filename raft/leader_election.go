@@ -17,9 +17,8 @@ func (rf *Raft) StartElection() {
 	done := false
 	votes := 1
 	fmt.Printf("[%d] attempting an election at term %d...", rf.me, rf.currentTerm)
-	lastLogIndex := len(rf.logs) - 1
-	lastLogTerm := rf.logs[lastLogIndex].Term
-	args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
+
+	args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: rf.getLogLength(), LastLogTerm: rf.getLastLogTerm()}
 
 	for i, _ := range rf.peers {
 		if rf.me == i {
@@ -55,7 +54,7 @@ func (rf *Raft) StartElection() {
 			if rf.state != Candidate {
 				return
 			}
-			fmt.Printf("\n[%d] got enough votes, and now is the leader (currentTerm=%d, maxIdx = %d)!\n", rf.me, rf.currentTerm, len(rf.logs)-1)
+			fmt.Printf("\n[%d] got enough votes, and now is the leader (currentTerm=%d, maxIdx = %d)!\n", rf.me, rf.currentTerm, rf.getLogLength())
 			fmt.Printf("[%d] All log entries: ", rf.me)
 			for idx, entry := range rf.logs {
 				fmt.Printf("idx=%d term=%d cmd=%v ", idx, entry.Term, entry.Command)
@@ -64,8 +63,8 @@ func (rf *Raft) StartElection() {
 			rf.state = Leader // 将自身设置为leader
 			// 重置 peerTrackers：nextIndex 初始化为 len(logs)，matchIndex 初始化为 0
 			for i := range rf.peerTrackers {
-				rf.peerTrackers[i].nextIndex = uint64(len(rf.logs)) // 初始化为 len(logs) = 1（因为预载了 index=0 的 entry）
-				rf.peerTrackers[i].matchIndex = 0                   // 初始化为 0
+				rf.peerTrackers[i].nextIndex = uint64(rf.getLogLength()) + 1 // 初始化为 len(logs) = 1（因为预载了 index=0 的 entry）
+				rf.peerTrackers[i].matchIndex = 0                            // 初始化为 0
 			}
 			// rf.peerTrackers[rf.me].matchIndex = uint64(len(rf.logs)) - 1
 			rf.StartAppendEntries(true) // 立即开始发送心跳而不是等定时器到期再发送，否则有一定概率在心跳到达从节点之前另一个leader也被选举成功，从而出现了两个leader
@@ -128,9 +127,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = None
 		rf.state = Follower
 	}
-	//Lab2B的日志复制直接确定为true
-	logLastIndex := len(rf.logs) - 1
-	logLastTerm := rf.logs[logLastIndex].Term
+
+	logLastIndex := rf.getLogLength()
+	logLastTerm := rf.getLastLogTerm()
 	update := args.LastLogTerm > logLastTerm || (args.LastLogIndex >= logLastIndex && args.LastLogTerm == logLastTerm)
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && update {
