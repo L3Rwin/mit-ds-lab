@@ -271,8 +271,8 @@ func (rf *Raft) StartAppendEntries(heart bool) {
 }
 
 func (rf *Raft) InstallSnapshot(args *RequestSnapshotArgs, reply *RequestSnapshotReply) {
-	DPrintf("[%d][%d] Successfully InstallSnapshot", rf.me, rf.currentTerm)
 	rf.mu.Lock()
+	DPrintf("[%d][%d] Successfully InstallSnapshot", rf.me, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		DPrintf("[%d][%d] InstallSnapshot failed because leader term is less than follower term", rf.me, rf.currentTerm)
@@ -327,8 +327,8 @@ func (rf *Raft) InstallSnapshot(args *RequestSnapshotArgs, reply *RequestSnapsho
 // RequestAppendEntries handles heartbeats and log replication.
 func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) {
 	rf.mu.Lock()
-	defer rf.persist()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	if args.LeaderTerm < rf.currentTerm {
 		reply.FollowerTerm = rf.currentTerm
@@ -474,7 +474,17 @@ func (rf *Raft) BuildAEArg(args *RequestAppendEntriesArgs, targetServerId int) {
 	} else {
 		args.PrevLogTerm = uint64(rf.logs[rf.getRelativeIndex(int(args.PrevLogIndex))].Term)
 	}
-	args.Logs = rf.logs[rf.getRelativeIndex(int(args.PrevLogIndex))+1:]
+	start := rf.getRelativeIndex(int(args.PrevLogIndex)) + 1
+	if start < 0 {
+		start = 0
+	}
+	if start < len(rf.logs) {
+		logs := make([]ApplyMsg, len(rf.logs[start:]))
+		copy(logs, rf.logs[start:])
+		args.Logs = logs
+	} else {
+		args.Logs = nil
+	}
 	args.LeaderCommit = rf.commitIndex
 }
 
@@ -516,12 +526,12 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 	reply := RequestAppendEntriesReply{}
 	args := RequestAppendEntriesArgs{}
 	rf.mu.Lock()
-	rf.BuildAEArg(&args, targetServerId)
-	rf.mu.Unlock()
-
 	if rf.state != Leader {
+		rf.mu.Unlock()
 		return
 	}
+	rf.BuildAEArg(&args, targetServerId)
+	rf.mu.Unlock()
 
 	ok := rf.sendRequestAppendEntries(targetServerId, &args, &reply)
 
@@ -572,6 +582,8 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 }
 
 func (rf *Raft) SayMeL() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return fmt.Sprintf("[Server %v as %v at term %v]", rf.me, rf.state, rf.currentTerm)
 }
 
@@ -602,10 +614,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.readPersist(rf.persister.ReadRaftState())
 
+	DPrintf("[%d][%d] Successfully Start", rf.me, rf.currentTerm)
 	// Background loops.
 	go rf.ticker()
 	go rf.applier()
-	DPrintf("[%d][%d] Successfully Start", rf.me, rf.currentTerm)
 	return rf
 }
 
@@ -613,31 +625,27 @@ func (rf *Raft) ticker() {
 	// Stay alive until killed.
 	for !rf.killed() {
 		rf.mu.Lock()
-		switch rf.state {
-		case Follower:
-			fallthrough
-		case Candidate:
-			if rf.pastElectionTimeout() {
-				rf.StartElection()
-			}
-		case Leader:
-			isHeartbeat := false
-			// Send heartbeat if the timer expired.
-			if rf.pastHeartbeatTimeout() {
-				isHeartbeat = true
-				rf.resetHeartbeatTimer()
-			}
-
-			rf.StartAppendEntries(isHeartbeat)
+		state := rf.state
+		shouldElection := (state == Follower || state == Candidate) && rf.pastElectionTimeout()
+		shouldHeartbeat := state == Leader && rf.pastHeartbeatTimeout()
+		if shouldHeartbeat {
+			rf.resetHeartbeatTimer()
 		}
-
 		rf.mu.Unlock()
+
+		if shouldElection {
+			rf.StartElection()
+		} else if state == Leader {
+			rf.StartAppendEntries(shouldHeartbeat)
+		}
 		time.Sleep(tickInterval)
 	}
 	fmt.Printf("tim")
 }
 
 func (rf *Raft) SaySth() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return fmt.Sprintf("[Server %v as %v at term %v]", rf.me, rf.state, rf.currentTerm)
 }
 

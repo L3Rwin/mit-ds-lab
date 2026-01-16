@@ -11,16 +11,30 @@ const baseElectionTimeout = 300
 const None = -1
 
 func (rf *Raft) StartElection() {
+	rf.mu.Lock()
+	if rf.state == Leader {
+		rf.mu.Unlock()
+		return
+	}
 	rf.becomeCandidate()
 	term := rf.currentTerm
+	me := rf.me
+	lastLogIndex := rf.getLogLength()
+	lastLogTerm := rf.getLastLogTerm()
+	args := RequestVoteArgs{
+		Term:         term,
+		CandidateId:  me,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
+	}
+	rf.mu.Unlock()
+
 	done := false
 	votes := 1
-	fmt.Printf("[%d] attempting an election at term %d...", rf.me, rf.currentTerm)
+	fmt.Printf("[%d] attempting an election at term %d...", me, term)
 
-	args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: rf.getLogLength(), LastLogTerm: rf.getLastLogTerm()}
-
-	for i, _ := range rf.peers {
-		if rf.me == i {
+	for i := range rf.peers {
+		if me == i {
 			continue
 		}
 		// Ask this peer for a vote.
@@ -56,6 +70,7 @@ func (rf *Raft) StartElection() {
 				fmt.Printf("idx=%d term=%d cmd=%v ", idx, entry.Term, entry.Command)
 			}
 			fmt.Printf("\n")
+			done = true
 			rf.state = Leader
 			// Reset peer trackers.
 			for i := range rf.peerTrackers {
@@ -101,8 +116,8 @@ func (rf *Raft) becomeLeader() {
 // RequestVote handles incoming vote requests.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	defer rf.persist()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
 	// Reject if candidate term is stale.
