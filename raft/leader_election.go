@@ -12,17 +12,25 @@ const baseElectionTimeout = 300
 const None = -1
 
 func (rf *Raft) StartElection() {
+	rf.mu.Lock()
+	if rf.state == Leader {
+		rf.mu.Unlock()
+		return
+	}
 	rf.becomeCandidate()
 	term := rf.currentTerm
-	done := false
-	votes := 1
-	fmt.Printf("[%d] attempting an election at term %d...", rf.me, rf.currentTerm)
+	me := rf.me
 	lastLogIndex := len(rf.logs) - 1
 	lastLogTerm := rf.logs[lastLogIndex].Term
-	args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
+	args := RequestVoteArgs{Term: term, CandidateId: me, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
+	rf.mu.Unlock()
 
-	for i, _ := range rf.peers {
-		if rf.me == i {
+	done := false
+	votes := 1
+	fmt.Printf("[%d] attempting an election at term %d...", me, term)
+
+	for i := range rf.peers {
+		if me == i {
 			continue
 		}
 		// 开启协程去尝试拉选票
@@ -31,7 +39,10 @@ func (rf *Raft) StartElection() {
 			ok := rf.sendRequestVote(serverId, &args, &reply)
 			//log.Printf("[%d] finish sending request vote to %d", rf.me, serverId)
 			if !ok {
-				DPrintf("%v: cannot give a Vote to %v args.term=%v\n", rf.SayMeL(), serverId, args.Term)
+				rf.mu.Lock()
+				say := fmt.Sprintf("[Server %v as %v at term %v]", rf.me, rf.state, rf.currentTerm)
+				rf.mu.Unlock()
+				DPrintf("%v: cannot give a Vote to %v args.term=%v\n", say, serverId, args.Term)
 				return
 			}
 			rf.mu.Lock()
@@ -61,6 +72,7 @@ func (rf *Raft) StartElection() {
 				fmt.Printf("idx=%d term=%d cmd=%v ", idx, entry.Term, entry.Command)
 			}
 			fmt.Printf("\n")
+			done = true
 			rf.state = Leader // 将自身设置为leader
 			// 重置 peerTrackers：nextIndex 初始化为 len(logs)，matchIndex 初始化为 0
 			for i := range rf.peerTrackers {
@@ -111,8 +123,8 @@ func (rf *Raft) becomeLeader() {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	defer rf.persist()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	////fmt.Printf("[%d] begins grasping the lock...", rf.me)
 	reply.VoteGranted = true    // 默认设置响应体为投同意票状态
 	reply.Term = rf.currentTerm //

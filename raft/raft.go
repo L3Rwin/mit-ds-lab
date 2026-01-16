@@ -327,8 +327,8 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 	// #endregion
 	rf.mu.Lock() // 加接收心跳方的锁
-	defer rf.persist()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	if args.LeaderTerm < rf.currentTerm {
 		reply.FollowerTerm = rf.currentTerm
@@ -447,7 +447,14 @@ func (rf *Raft) BuildAEArg(args *RequestAppendEntriesArgs, targetServerId int) {
 	}
 	args.PrevLogIndex = nextIndex - 1
 	args.PrevLogTerm = uint64(rf.logs[args.PrevLogIndex].Term)
-	args.Logs = rf.logs[args.PrevLogIndex+1:]
+	start := int(args.PrevLogIndex) + 1
+	if start < len(rf.logs) {
+		logs := make([]ApplyMsg, len(rf.logs[start:]))
+		copy(logs, rf.logs[start:])
+		args.Logs = logs
+	} else {
+		args.Logs = nil
+	}
 	args.LeaderCommit = rf.commitIndex
 }
 
@@ -494,13 +501,12 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 	reply := RequestAppendEntriesReply{}
 	args := RequestAppendEntriesArgs{}
 	rf.mu.Lock()
-	rf.BuildAEArg(&args, targetServerId)
-	rf.mu.Unlock()
-
-	// args.Logs = rf.logs[args.PrevLogIndex+1:]
 	if rf.state != Leader {
+		rf.mu.Unlock()
 		return
 	}
+	rf.BuildAEArg(&args, targetServerId)
+	rf.mu.Unlock()
 
 	// log append
 
@@ -562,6 +568,8 @@ func (rf *Raft) AppendEntries(targetServerId int, heart bool) {
 }
 
 func (rf *Raft) SayMeL() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return fmt.Sprintf("[Server %v as %v at term %v]", rf.me, rf.state, rf.currentTerm)
 }
 
@@ -612,37 +620,27 @@ func (rf *Raft) ticker() {
 	// 如果这个raft节点没有掉线,则一直保持活跃不下线状态（可以因为网络原因掉线，也可以tester主动让其掉线以便测试）
 	for !rf.killed() {
 		rf.mu.Lock()
-		switch rf.state {
-		case Follower:
-			fallthrough // 相当于执行#A到#C代码块,
-		case Candidate:
-			if rf.pastElectionTimeout() { //#A
-				rf.StartElection()
-			} //#C
-		case Leader:
-			//if !rf.quorumActive() {
-			//	// 如果票数不够需要转变为follower
-			//	break
-			//}
-			// 只有Leader节点才能发送心跳和日志给从节点
-			isHeartbeat := false
-			// 检测是需要发送单纯的心跳还是发送日志
-			// 心跳定时器过期则发送心跳，否则发送日志
-			if rf.pastHeartbeatTimeout() {
-				isHeartbeat = true
-				rf.resetHeartbeatTimer()
-			}
-
-			rf.StartAppendEntries(isHeartbeat)
+		state := rf.state
+		shouldElection := (state == Follower || state == Candidate) && rf.pastElectionTimeout()
+		shouldHeartbeat := state == Leader && rf.pastHeartbeatTimeout()
+		if shouldHeartbeat {
+			rf.resetHeartbeatTimer()
 		}
-
 		rf.mu.Unlock()
+
+		if shouldElection {
+			rf.StartElection()
+		} else if state == Leader {
+			rf.StartAppendEntries(shouldHeartbeat)
+		}
 		time.Sleep(tickInterval)
 	}
 	fmt.Printf("tim")
 }
 
 func (rf *Raft) SaySth() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return fmt.Sprintf("[Server %v as %v at term %v]", rf.me, rf.state, rf.currentTerm)
 }
 
