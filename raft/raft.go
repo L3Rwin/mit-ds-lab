@@ -20,7 +20,6 @@ package raft
 import (
 	"bytes"
 	"fmt"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,7 +41,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-	Term         int ``
+	Term         int
 
 	// For 2D:
 	SnapshotValid bool
@@ -98,24 +97,6 @@ type RequestAppendEntriesReply struct {
 	ConflictTerm  int  // 冲突的条目的任期
 }
 
-func (rf *Raft) getHeartbeatTime() time.Duration {
-	return time.Millisecond * 110
-}
-
-// #region agent log
-
-// #endregion
-
-// 随机化的选举超时时间
-func (rf *Raft) getElectionTime() time.Duration {
-	// [250,400) 250+[0,150]
-	// return time.Millisecond * time.Duration(250+15*rf.me)
-	//return time.Millisecond * time.Duration(350+rand.Intn(1000))
-
-	return time.Millisecond * time.Duration(350+rand.Intn(200))
-}
-
-// 这个是只给tester调的
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -126,7 +107,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term = rf.currentTerm
-	isleader = rf.state == Leader
+	isleader = (rf.state == Leader) && !rf.killed()
 	////fmt.Printf("getting Leader State %d and term %d of node %d \n", rf.state, rf.currentTerm, rf.me)
 	return term, isleader
 }
@@ -248,8 +229,7 @@ func (rf *Raft) sendRequestAppendEntries(server int, args *RequestAppendEntriesA
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
+
 	isLeader := true
 
 	rf.mu.Lock()
@@ -259,8 +239,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, -1, false
 	}
 
-	index = len(rf.logs)
-	term = rf.currentTerm
+	index := len(rf.logs)
+	term := rf.currentTerm
 
 	rf.logs = append(rf.logs, ApplyMsg{CommandValid: true, Command: command, CommandIndex: index, Term: term})
 	rf.persist()
@@ -595,7 +575,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower //设置节点的初始状态为follower
 	rf.resetElectionTimer()
 	rf.logs = make([]ApplyMsg, 1)
-	rf.logs[0] = ApplyMsg{CommandValid: true, Command: nil, CommandIndex: 0, Term: 0}
+	rf.logs[0] = ApplyMsg{CommandValid: false, Command: nil, CommandIndex: 0, Term: 0}
 	rf.heartbeatTimeout = heartbeatTimeout // 这个是固定的
 	// 初始化 peerTrackers，nextIndex 初始化为 len(logs) = 1（因为预载了 index=0 的 entry）
 	rf.peerTrackers = make([]PeerTracker, len(peers))
